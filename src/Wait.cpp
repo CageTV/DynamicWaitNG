@@ -151,6 +151,7 @@ namespace Wait
 
 		void Restore(RE::TESGlobal* a_scale)
 		{
+			logger::info("Speed-up ended, timescale back to {}", baseScale);
 			if (a_scale) {
 				a_scale->value = baseScale;
 			}
@@ -158,6 +159,24 @@ namespace Wait
 			phase = Phase::kIdle;
 			currentMult = 1.0f;
 			Publish(baseScale);
+		}
+
+		// A key pressed while a menu is open can lose its key-up. Ask Windows whether the keys we think are down really are.
+		void DropReleasedKeys()
+		{
+			std::erase_if(held, [](std::uint32_t a_code) {
+				if (a_code >= 256) {
+					return false;  // mouse and gamepad buttons: no way to ask
+				}
+				// the numpad's scan codes map to the navigation keys, but with Num Lock on Windows reports the numpad's own virtual keys: not checkable
+				if (a_code >= 0x47 && a_code <= 0x53) {
+					return false;
+				}
+				// DirectInput scan codes above 0x80 are the extended keys (0xE0 prefix)
+				const UINT scan = a_code >= 0x80 ? (0xE000u | (a_code - 0x80)) : a_code;
+				const UINT vk = MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX);
+				return vk != 0 && (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) == 0;
+			});
 		}
 
 		void Tick()
@@ -188,9 +207,17 @@ namespace Wait
 				return;
 			}
 
+			DropReleasedKeys();
+
 			bool       want = WantActive();
 			const auto block = CurrentBlock(now);
 			sharedBlock.store(static_cast<int>(block));
+			if (block == Block::kMenu || block == Block::kLoading) {
+				// the game (or the SKSE Menu Framework, while a key is being picked) keeps the key-up of a key pressed in a menu: start over once it is closed
+				held.clear();
+				toggled = false;
+				want = false;
+			}
 			if (block != Block::kNone) {
 				if (phase != Phase::kIdle) {
 					logger::info("Speed-up stopped: {}", BlockName(block));
